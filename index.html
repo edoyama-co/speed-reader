@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Speed Reader (RSVP)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --fg: #e8e8e8;
+    --muted: #8a8f98;
+    --accent: #ff4d4d;
+    --panel: #1a1d24;
+    --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    height: 100%;
+  }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 {
+    margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  .file-label {
+    cursor: pointer; padding: 8px 14px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; font-size: 14px;
+  }
+  .file-label:hover { border-color: var(--accent); }
+  input[type=file] { display: none; }
+  .status { color: var(--muted); font-size: 13px; }
+
+  main {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    position: relative; padding: 24px;
+  }
+  .reader {
+    width: 100%; max-width: 1200px; text-align: center;
+    font-family: "SF Mono", "Menlo", "Courier New", monospace;
+    font-size: clamp(40px, 7vw, 80px);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    user-select: none;
+    position: relative;
+    min-height: 1.5em;
+  }
+  .word { display: inline-block; white-space: pre; }
+  .pivot { color: var(--accent); }
+
+  .empty-hint {
+    color: var(--muted); font-size: 18px; font-family: inherit;
+    letter-spacing: normal;
+  }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 16px 24px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .controls {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  button {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px; font-size: 14px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+
+  .slider-group {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .slider-group.wpm { margin-left: auto; }
+  .slider-group input[type=range] { width: 180px; }
+  .slider-value {
+    font-variant-numeric: tabular-nums; min-width: 90px;
+    font-size: 14px; color: var(--muted);
+  }
+  .progress {
+    height: 4px; background: var(--panel); border-radius: 2px; overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%; background: var(--accent); width: 0%;
+    transition: width 0.1s linear;
+  }
+  .meta {
+    font-size: 12px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap;
+    align-items: center;
+  }
+  .jump {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .jump input {
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 3px 6px; font-size: 12px; font-family: inherit;
+    width: 80px; font-variant-numeric: tabular-nums;
+  }
+  .jump input:focus { outline: none; border-color: var(--accent); }
+  kbd {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 6px; font-size: 11px; font-family: inherit;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speed Reader</h1>
+  <label class="file-label" for="pdf-input">Open PDF</label>
+  <input id="pdf-input" type="file" accept="application/pdf,text/plain">
+  <span class="status" id="status">No file loaded</span>
+</header>
+
+<main>
+  <div class="reader" id="reader">
+    <span class="empty-hint">Drop a PDF in the top bar, press <kbd>Space</kbd> to start.</span>
+  </div>
+</main>
+
+<footer>
+  <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+  <div class="controls">
+    <button id="back-btn" disabled title="Back 10 words (←)">⏮ 10</button>
+    <button id="play-btn" class="primary" disabled title="Play / Pause (Space)">▶ Play</button>
+    <button id="fwd-btn" disabled title="Forward 10 words (→)">10 ⏭</button>
+    <button id="restart-btn" disabled title="Restart (R)">↺ Restart</button>
+    <div class="slider-group">
+      <span class="slider-value"><span id="chunk-display">1</span> word/flash</span>
+      <input type="range" id="chunk-slider" min="1" max="5" step="1" value="1">
+    </div>
+    <div class="slider-group wpm">
+      <span class="slider-value"><span id="wpm-display">350</span> wpm</span>
+      <input type="range" id="wpm-slider" min="100" max="2000" step="25" value="350">
+    </div>
+  </div>
+  <div class="meta">
+    <span class="jump">
+      Word
+      <input type="number" id="jump-input" min="1" value="1" disabled>
+      of <span id="total-words">0</span>
+    </span>
+    <span id="percent-read">0%</span>
+    <span id="time-left"></span>
+    <span style="margin-left:auto">
+      <kbd>Space</kbd> play/pause &nbsp;
+      <kbd>←</kbd>/<kbd>→</kbd> back/fwd 10 &nbsp;
+      <kbd>↑</kbd>/<kbd>↓</kbd> wpm ±25 &nbsp;
+      <kbd>[</kbd>/<kbd>]</kbd> chunk ±1 &nbsp;
+      <kbd>R</kbd> restart
+    </span>
+  </div>
+</footer>
+
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  const $ = (id) => document.getElementById(id);
+  const reader = $("reader");
+  const status = $("status");
+  const playBtn = $("play-btn");
+  const backBtn = $("back-btn");
+  const fwdBtn = $("fwd-btn");
+  const restartBtn = $("restart-btn");
+  const wpmSlider = $("wpm-slider");
+  const wpmDisplay = $("wpm-display");
+  const progressBar = $("progress-bar");
+  const jumpInput = $("jump-input");
+  const totalWordsEl = $("total-words");
+  const percentEl = $("percent-read");
+  const timeLeftEl = $("time-left");
+
+  const chunkSlider = $("chunk-slider");
+  const chunkDisplay = $("chunk-display");
+
+  let words = [];
+  let idx = 0;
+  let playing = false;
+  let timer = null;
+  let wpm = parseInt(wpmSlider.value, 10);
+  let chunkSize = parseInt(chunkSlider.value, 10);
+  let bookKey = null;
+  let saveTimer = null;
+
+  function makeBookKey(filename, wordCount) {
+    return `rsvp:${filename}:${wordCount}`;
+  }
+  function saveProgress() {
+    if (!bookKey || !words.length) return;
+    try { localStorage.setItem(bookKey, String(idx)); } catch {}
+  }
+  function loadProgress(key) {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? parseInt(v, 10) : 0;
+    } catch { return 0; }
+  }
+  function scheduleSave() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(() => { saveTimer = null; saveProgress(); }, 1500);
+  }
+
+  // Pivot position: roughly 30% into the word, capped (Spritz-style ORP)
+  function pivotIndex(w) {
+    const len = w.length;
+    if (len <= 1) return 0;
+    if (len <= 5) return 1;
+    if (len <= 9) return 2;
+    if (len <= 13) return 3;
+    return 4;
+  }
+
+  function renderChunk(chunk) {
+    if (!chunk || !chunk.length) {
+      reader.innerHTML = '<span class="empty-hint">Done.</span>';
+      return;
+    }
+    // Highlight pivot on the middle word; chunk itself is centered as a block
+    const pivotWordIdx = Math.floor(chunk.length / 2);
+    const pivotWord = chunk[pivotWordIdx];
+    const p = pivotIndex(pivotWord);
+    const leftWords = chunk.slice(0, pivotWordIdx).join(" ");
+    const rightWords = chunk.slice(pivotWordIdx + 1).join(" ");
+    const leftText =
+      (leftWords ? leftWords + " " : "") + pivotWord.slice(0, p);
+    const rightText =
+      pivotWord.slice(p + 1) + (rightWords ? " " + rightWords : "");
+
+    reader.innerHTML =
+      `<span class="word">` +
+        escapeHtml(leftText) +
+        `<span class="pivot">${escapeHtml(pivotWord[p] || "")}</span>` +
+        escapeHtml(rightText) +
+      `</span>`;
+  }
+
+  function currentChunk() {
+    return words.slice(idx, idx + chunkSize);
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
+
+  // Variable delay scales with chunk size; punctuation in chunk adds dwell
+  function delayForChunk(chunk) {
+    const base = (60000 / wpm) * chunk.length;
+    let mult = 1;
+    const last = chunk[chunk.length - 1] || "";
+    const longest = chunk.reduce((m, w) => Math.max(m, w.length), 0);
+    if (longest > 8) mult += 0.2;
+    if (longest > 12) mult += 0.2;
+    if (/[.!?]$/.test(last)) mult += 0.6;
+    else if (/[,;:]$/.test(last)) mult += 0.3;
+    return base * mult;
+  }
+
+  function tick() {
+    if (!playing) return;
+    if (idx >= words.length) { stop(); updateUI(); return; }
+    const chunk = currentChunk();
+    renderChunk(chunk);
+    updateUI();
+    const delay = delayForChunk(chunk);
+    idx += chunkSize;
+    timer = setTimeout(tick, delay);
+  }
+
+  function play() {
+    if (!words.length) return;
+    if (idx >= words.length) idx = 0;
+    playing = true;
+    playBtn.textContent = "⏸ Pause";
+    tick();
+  }
+
+  function stop() {
+    playing = false;
+    playBtn.textContent = "▶ Play";
+    if (timer) { clearTimeout(timer); timer = null; }
+    saveProgress();
+  }
+
+  window.addEventListener("beforeunload", saveProgress);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) saveProgress();
+  });
+
+  function toggle() {
+    if (!words.length) return;
+    playing ? stop() : play();
+  }
+
+  function seek(delta) {
+    idx = Math.max(0, Math.min(words.length, idx + delta));
+    if (!playing) renderChunk(currentChunk());
+    updateUI();
+  }
+
+  function restart() {
+    stop();
+    idx = 0;
+    renderChunk(currentChunk());
+    updateUI();
+  }
+
+  function updateUI() {
+    const total = words.length;
+    totalWordsEl.textContent = total;
+    if (document.activeElement !== jumpInput) {
+      jumpInput.value = Math.min(idx + 1, Math.max(1, total));
+    }
+    jumpInput.max = Math.max(1, total);
+    jumpInput.disabled = total === 0;
+    const pct = total ? (idx / total) * 100 : 0;
+    progressBar.style.width = `${pct}%`;
+    percentEl.textContent = `${pct.toFixed(1)}%`;
+    scheduleSave();
+    const remaining = Math.max(0, total - idx);
+    const minutes = remaining / wpm;
+    if (total) {
+      const mm = Math.floor(minutes);
+      const ss = Math.round((minutes - mm) * 60);
+      timeLeftEl.textContent = `~${mm}m ${ss.toString().padStart(2,"0")}s left`;
+    } else {
+      timeLeftEl.textContent = "";
+    }
+    const has = total > 0;
+    playBtn.disabled = !has;
+    backBtn.disabled = !has;
+    fwdBtn.disabled = !has;
+    restartBtn.disabled = !has;
+  }
+
+  function tokenize(text) {
+    return text
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .filter(Boolean);
+  }
+
+  async function loadPDF(file) {
+    status.textContent = `Reading ${file.name}…`;
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let text = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const pageText = content.items.map((it) => it.str).join(" ");
+      text += pageText + " ";
+      status.textContent = `Reading ${file.name}… (page ${p}/${pdf.numPages})`;
+    }
+    return text;
+  }
+
+  async function loadText(file) {
+    return await file.text();
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    try {
+      stop();
+      let text = "";
+      if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+        text = await loadPDF(file);
+      } else {
+        text = await loadText(file);
+      }
+      words = tokenize(text);
+      bookKey = makeBookKey(file.name, words.length);
+      const saved = loadProgress(bookKey);
+      idx = (saved > 0 && saved < words.length) ? saved : 0;
+      renderChunk(currentChunk());
+      updateUI();
+      const resumeMsg = idx > 0
+        ? ` — resumed at ${((idx / words.length) * 100).toFixed(1)}%`
+        : "";
+      status.textContent = `${file.name} — ${words.length.toLocaleString()} words${resumeMsg}`;
+      playBtn.focus();
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`;
+      console.error(err);
+    }
+  }
+
+  $("pdf-input").addEventListener("change", (e) => handleFile(e.target.files[0]));
+  playBtn.addEventListener("click", toggle);
+  backBtn.addEventListener("click", () => seek(-10));
+  fwdBtn.addEventListener("click", () => seek(10));
+  restartBtn.addEventListener("click", restart);
+  wpmSlider.addEventListener("input", (e) => {
+    wpm = parseInt(e.target.value, 10);
+    wpmDisplay.textContent = wpm;
+    updateUI();
+  });
+  chunkSlider.addEventListener("input", (e) => {
+    chunkSize = parseInt(e.target.value, 10);
+    chunkDisplay.textContent = chunkSize;
+    if (!playing) renderChunk(currentChunk());
+    updateUI();
+  });
+
+  function jumpTo(wordNumber) {
+    if (!words.length) return;
+    const target = Math.max(1, Math.min(words.length, wordNumber || 1));
+    idx = target - 1;
+    if (!playing) renderChunk(currentChunk());
+    updateUI();
+  }
+  jumpInput.addEventListener("change", (e) => {
+    jumpTo(parseInt(e.target.value, 10));
+  });
+  jumpInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      jumpTo(parseInt(e.target.value, 10));
+      jumpInput.blur();
+    }
+  });
+
+  // Drag-and-drop anywhere on the page
+  document.addEventListener("dragover", (e) => { e.preventDefault(); });
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return;
+    if (e.code === "Space") { e.preventDefault(); toggle(); }
+    else if (e.code === "ArrowLeft") { e.preventDefault(); seek(-10); }
+    else if (e.code === "ArrowRight") { e.preventDefault(); seek(10); }
+    else if (e.code === "ArrowUp") {
+      e.preventDefault();
+      wpmSlider.value = Math.min(1000, wpm + 25);
+      wpmSlider.dispatchEvent(new Event("input"));
+    }
+    else if (e.code === "ArrowDown") {
+      e.preventDefault();
+      wpmSlider.value = Math.max(100, wpm - 25);
+      wpmSlider.dispatchEvent(new Event("input"));
+    }
+    else if (e.key === "[") {
+      e.preventDefault();
+      chunkSlider.value = Math.max(1, chunkSize - 1);
+      chunkSlider.dispatchEvent(new Event("input"));
+    }
+    else if (e.key === "]") {
+      e.preventDefault();
+      chunkSlider.value = Math.min(5, chunkSize + 1);
+      chunkSlider.dispatchEvent(new Event("input"));
+    }
+    else if (e.key === "r" || e.key === "R") { e.preventDefault(); restart(); }
+  });
+
+  updateUI();
+</script>
+</body>
+</html>
